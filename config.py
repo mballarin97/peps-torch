@@ -197,8 +197,8 @@ class GLOBALARGS():
 
 class PEPSARGS():
     def __init__(self):
-        self.build_dl= True
-        self.build_dl_open= False
+        self.build_dl= False
+        self.build_dl_open= True
         self.quasi_gauge_max_iter= 10**6
         self.quasi_gauge_tol= 1.0e-8
 

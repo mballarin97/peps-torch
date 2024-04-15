@@ -131,6 +131,14 @@ class HUBBARD():
             (self.penalty, [operators["id"] for _ in range(4)])
             ]
 
+        self.local_obs = [
+            ("S2", operators["S2"]),
+            ("N_pair", operators["N_pair"]),
+            ("N_tot", operators["N_tot"]),
+        ]
+        for op in ("n_px", "n_mx", "n_py", "n_my"):
+            self.local_obs += [ (op, operators[op])]
+
         return
 
     def get_obs_ops(self):
@@ -225,11 +233,15 @@ class HUBBARD():
             1. :math:`\langle 2S^z \rangle,\ \langle 2S^x \rangle` for each site in the unit cell
 
         """
+        obs = {}
+        with torch.no_grad():
+            for coord, site in state.sites.items():
+                rdm1x1= rdm.rdm1x1(coord, state, env)
+                for label, op in self.local_obs:
+                    obs[f"{label}"]= torch.trace(rdm1x1@op)
 
         # prepare list with labels and values
-        obs_labels= [f"{lc[1]}{lc[0]}" for lc in list(itertools.product(state.sites.keys(), ["sz","sx"]))]
-        obs_labels+= [f"SzSz2x1{coord}" for coord in state.sites.keys()]
-        obs_labels+= [f"SzSz1x2{coord}" for coord in state.sites.keys()]
-        obs_labels+= [f"SzSzSzSz{coord}" for coord in state.sites.keys()]
-        obs_values=[None for _ in obs_labels]
+        obs_labels = list(obs.keys())
+        obs_values = list(obs.values())
+        obs_values = [ _cast_to_real(o) for o in obs_values]
         return obs_values, obs_labels
