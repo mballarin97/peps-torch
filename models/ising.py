@@ -14,7 +14,7 @@ class ISING():
     def __init__(self, hx=0.0, q=0.0, global_args=cfg.global_args):
         r"""
         :param hx: transverse field
-        :param q: plaquette interaction 
+        :param q: plaquette interaction
         :param global_args: global configuration
         :type hx: float
         :type q: float
@@ -24,8 +24,8 @@ class ISING():
 
         .. math:: H = - \sum_{<i,j>} h2_{<i,j>} + q\sum_{p} h4_p - h_x\sum_i h1_i
 
-        on the square lattice. Where the first sum runs over the pairs of sites `i,j` 
-        which are nearest-neighbours (denoted as `<.,.>`), the second sum runs over 
+        on the square lattice. Where the first sum runs over the pairs of sites `i,j`
+        which are nearest-neighbours (denoted as `<.,.>`), the second sum runs over
         all plaquettes `p`, and the last sum runs over all sites::
 
             y\x
@@ -41,13 +41,13 @@ class ISING():
 
         * :math:`h2_{ij} = 4S^z_i S^z_j` with indices of h2 corresponding to :math:`s_i s_j;s'_i s'_j`
         * :math:`h4_p  = 16S^z_i S^z_j S^z_k S^z_l` where `i,j,k,l` labels the sites of a plaquette::
-          
+
             p= i---j
                |   |
-               k---l 
+               k---l
 
           and the indices of `h4` correspond to :math:`s_is_js_ks_l;s'_is'_js'_ks'_l`
-        
+
         * :math:`h1_i  = 2S^x_i`
         """
         self.dtype=global_args.torch_dtype
@@ -55,12 +55,12 @@ class ISING():
         self.phys_dim=2
         self.hx=hx
         self.q=q
-        
+
         self.h2, self.h4, self.h1, self.hp = self.get_h()
         self.obs_ops = self.get_obs_ops()
 
     def get_h(self):
-        s2 = su2.SU2(self.phys_dim, dtype=self.dtype, device=self.device) 
+        s2 = su2.SU2(self.phys_dim, dtype=self.dtype, device=self.device)
         id2= torch.eye(4,dtype=self.dtype,device=self.device)
         id2= id2.view(2,2,2,2).contiguous()
         SzSz = 4*torch.einsum('ij,ab->iajb',s2.SZ(),s2.SZ())
@@ -70,6 +70,15 @@ class ISING():
         SxIdIdId= torch.einsum('ia,jb,kc,ld->ijklabcd',Sx,s2.I(),s2.I(),s2.I())
 
         hp = -SzSzIdId -SzSzIdId.permute(0,2,1,3,4,6,5,7) -self.q*SzSzSzSz -self.hx*SxIdIdId
+
+        self._h1 = Sx
+        self._h2 = [2*s2.SZ() for _ in range(2)]
+        self._h4 = [s2.SZ() for _ in range(4)]
+
+        self.th1 = -self.hx*SxIdIdId
+        self.thlr = -SzSzIdId
+        self.thud = -SzSzIdId.permute(0,2,1,3,4,6,5,7)
+        self.thp = -self.q*SzSzSzSz
 
         return SzSz, SzSzSzSz, Sx, hp
 
@@ -81,6 +90,37 @@ class ISING():
         obs_ops["sm"]= 2*s2.SM()
         return obs_ops
 
+    def energy_1x1_old(self,state,env):
+        r"""
+        :param state: wavefunction
+        :param env: CTM environment
+        :type state: IPEPS
+        :type env: ENV
+        :return: energy per site
+        :rtype: float
+
+        For 1-site invariant iPEPS it's enough to construct a single reduced
+        density matrix of a 2x2 plaquette. Afterwards, the energy per site `e` is
+        computed by evaluating individual terms in the Hamiltonian through
+        :math:`\langle \mathcal{O} \rangle = Tr(\rho_{2x2} \mathcal{O})`
+
+        .. math::
+
+            e = -(\langle h2_{<\bf{0},\bf{x}>} \rangle + \langle h2_{<\bf{0},\bf{y}>} \rangle)
+            + q\langle h4_{\bf{0}} \rangle - h_x \langle h4_{\bf{0}} \rangle
+
+        """
+        rdm2x2= rdm.rdm2x2((0,0),state,env)
+        energy_per_site= torch.einsum('ijklabcd,ijklabcd',rdm2x2,self.hp)
+        # eSx= torch.einsum('ijklajkl,ia',rdm2x2,self.h1)
+        # eSzSz= torch.einsum('ijklabkl,ijab',rdm2x2,self.h2) + \
+        #     torch.einsum('ijklajcl,ikac',rdm2x2,self.h2)
+        # eSzSzSzSz= torch.einsum('ijklabcd,ijklabcd',rdm2x2,self.h4)
+        # energy_per_site = -eSzSz - self.hx*eSx + self.q*eSzSzSzSz
+        energy_per_site= _cast_to_real(energy_per_site)
+
+        return energy_per_site
+
     def energy_1x1(self,state,env):
         r"""
         :param state: wavefunction
@@ -91,26 +131,79 @@ class ISING():
         :rtype: float
 
         For 1-site invariant iPEPS it's enough to construct a single reduced
-        density matrix of a 2x2 plaquette. Afterwards, the energy per site `e` is 
+        density matrix of a 2x2 plaquette. Afterwards, the energy per site `e` is
         computed by evaluating individual terms in the Hamiltonian through
         :math:`\langle \mathcal{O} \rangle = Tr(\rho_{2x2} \mathcal{O})`
-        
-        .. math:: 
+
+        .. math::
 
             e = -(\langle h2_{<\bf{0},\bf{x}>} \rangle + \langle h2_{<\bf{0},\bf{y}>} \rangle)
             + q\langle h4_{\bf{0}} \rangle - h_x \langle h4_{\bf{0}} \rangle
 
         """
-        rdm2x2= rdm.rdm2x2((0,0),state,env)
-        energy_per_site= torch.einsum('ijklabcd,ijklabcd',rdm2x2,self.hp) 
+        verbose = False
+        if verbose:
+            print("-"*50)
+        # LD, RD, LU, RU
+        rdm2x2_ctr= rdm.rdm2x2((0,0),state,env)
+        rdm2x2= rdm.rdm2x2_uncontracted((0,0),state,env)
+
+        # Normalize the state
+        norm = self.sandwitch(rdm2x2)
+        rdm2x2[0] /= norm
+
+        elocal = torch.einsum("ijkl,mk", (rdm2x2[0]), self._h1)
+        elocal = -self.hx*self.sandwitch([elocal] + (rdm2x2[1:]) )
+        elocal_real = torch.einsum('ijklabcd,ijklabcd',rdm2x2_ctr,self.th1)
+        if verbose:
+            print("ELOCAL", elocal, elocal_real)
+
+        ehopping_lr0 = torch.einsum("ijkl, mk", rdm2x2[0], self._h2[0])
+        ehopping_lr1 = torch.einsum("ijkl, mk", rdm2x2[1], self._h2[1])
+        ehopping_lr = -self.sandwitch([ehopping_lr0, ehopping_lr1] + rdm2x2[2:] )
+        ehopping_lr_real = torch.einsum('ijklabcd,ijklabcd',rdm2x2_ctr,self.thlr)
+        if verbose:
+            print("ELEFTRIGHT", ehopping_lr, ehopping_lr_real)
+
+        ehopping_du0 = torch.einsum("ijkl, mk", rdm2x2[0], self._h2[0])
+        ehopping_du1 = torch.einsum("ijkl, mk", rdm2x2[2], self._h2[1])
+        ehopping_du = -self.sandwitch([ehopping_du0, rdm2x2[1], ehopping_du1, rdm2x2[3]] )
+        ehopping_du_real = torch.einsum('ijklabcd,ijklabcd',rdm2x2_ctr,self.thud)
+        if verbose:
+            print("EDOWNUP", ehopping_du, ehopping_du_real)
+
+        eplaq_0 = torch.einsum("ijkl, mk", rdm2x2[0], self._h4[0])
+        eplaq_1 = torch.einsum("ijkl, mk", rdm2x2[1], self._h4[1])
+        eplaq_2 = torch.einsum("ijkl, mk", rdm2x2[2], self._h4[2])
+        eplaq_3 = torch.einsum("ijkl, mk", rdm2x2[3], self._h4[3])
+        eplaq = -self.q*self.sandwitch([eplaq_0, eplaq_1, eplaq_2, eplaq_3] )
+        eplaq_real =torch.einsum('ijklabcd,ijklabcd',rdm2x2_ctr,self.thp)
+        if verbose:
+            print("EPLAQ", eplaq, eplaq_real)
+            print("")
+
         # eSx= torch.einsum('ijklajkl,ia',rdm2x2,self.h1)
         # eSzSz= torch.einsum('ijklabkl,ijab',rdm2x2,self.h2) + \
         #     torch.einsum('ijklajcl,ikac',rdm2x2,self.h2)
         # eSzSzSzSz= torch.einsum('ijklabcd,ijklabcd',rdm2x2,self.h4)
         # energy_per_site = -eSzSz - self.hx*eSx + self.q*eSzSzSzSz
-        energy_per_site= _cast_to_real(energy_per_site)
+        energy_per_site= _cast_to_real(elocal+ehopping_lr+ehopping_du+eplaq)
+        energy_per_site_real = _cast_to_real(elocal_real+ehopping_lr_real+ehopping_du_real+eplaq_real)
 
-        return energy_per_site 
+        return energy_per_site#_real
+
+    def sandwitch(self, this):
+
+        temps = []
+        for tt in (this):
+            temps.append(
+                torch.einsum("ijkk", tt)
+            )
+        down = torch.einsum("ij,kj", temps[0], temps[1])
+        up = torch.einsum("ij,jk", temps[2], temps[3])
+        res = torch.einsum("ij, ij", down, up)
+
+        return res
 
     def eval_obs(self,state,env):
         r"""
@@ -133,7 +226,7 @@ class ISING():
                 for label,op in self.obs_ops.items():
                     obs[f"{label}{coord}"]= torch.trace(rdm1x1@op)
                 obs[f"sx{coord}"]= 0.5*(obs[f"sp{coord}"] + obs[f"sm{coord}"])
-            
+
             for coord,site in state.sites.items():
                 rdm2x1= rdm.rdm2x1(coord,state,env)
                 rdm1x2= rdm.rdm1x2(coord,state,env)
@@ -157,7 +250,7 @@ class ISING_C4V():
     def __init__(self, hx=0.0, q=0, global_args=cfg.global_args):
         r"""
         :param hx: transverse field
-        :param q: plaquette interaction 
+        :param q: plaquette interaction
         :param global_args: global configuration
         :type hx: float
         :type q: float
@@ -167,8 +260,8 @@ class ISING_C4V():
 
         .. math:: H = - \sum_{<i,j>} h2_{<i,j>} + q\sum_{p} h4_p - h_x\sum_i h1_i
 
-        on the square lattice. Where the first sum runs over the pairs of sites `i,j` 
-        which are nearest-neighbours (denoted as `<.,.>`), the second sum runs over 
+        on the square lattice. Where the first sum runs over the pairs of sites `i,j`
+        which are nearest-neighbours (denoted as `<.,.>`), the second sum runs over
         all plaquettes `p`, and the last sum runs over all sites::
 
             y\x
@@ -184,13 +277,13 @@ class ISING_C4V():
 
         * :math:`h2_{ij} = 4S^z_i S^z_j` with indices of h2 corresponding to :math:`s_i s_j;s'_i s'_j`
         * :math:`h4_p  = 16S^z_i S^z_j S^z_k S^z_l` where `i,j,k,l` labels the sites of a plaquette::
-          
+
             p= i---j
                |   |
-               k---l 
+               k---l
 
           and the indices of `h4` correspond to :math:`s_is_js_ks_l;s'_is'_js'_ks'_l`
-        
+
         * :math:`h1_i  = 2S^x_i`
         """
         self.dtype=global_args.torch_dtype
@@ -198,12 +291,12 @@ class ISING_C4V():
         self.phys_dim=2
         self.hx=hx
         self.q=q
-        
+
         self.h2, self.hp, self.szszszsz, self.szsz, self.sx = self.get_h()
         self.obs_ops = self.get_obs_ops()
 
     def get_h(self):
-        s2 = su2.SU2(self.phys_dim, dtype=self.dtype, device=self.device) 
+        s2 = su2.SU2(self.phys_dim, dtype=self.dtype, device=self.device)
         id2= torch.eye(4,dtype=self.dtype,device=self.device)
         id2= id2.view(2,2,2,2).contiguous()
         SzSz = 4*torch.einsum('ij,ab->iajb',s2.SZ(),s2.SZ())
@@ -235,12 +328,12 @@ class ISING_C4V():
         :return: energy per site
         :rtype: float
 
-        For 1-site invariant c4v iPEPS with no 4-site term present in Hamiltonian it is enough 
-        to construct a single reduced density matrix of a 2x1 nearest-neighbour sites. 
-        Afterwards, the energy per site `e` is computed by evaluating individual terms 
+        For 1-site invariant c4v iPEPS with no 4-site term present in Hamiltonian it is enough
+        to construct a single reduced density matrix of a 2x1 nearest-neighbour sites.
+        Afterwards, the energy per site `e` is computed by evaluating individual terms
         in the Hamiltonian through :math:`\langle \mathcal{O} \rangle = Tr(\rho_{2x1} \mathcal{O})`
-        
-        .. math:: 
+
+        .. math::
 
             e = -\langle h2_{<\bf{0},\bf{x}>} \rangle - h_x \langle h1_{\bf{0}} \rangle
         """
@@ -262,11 +355,11 @@ class ISING_C4V():
         :rtype: float
 
         For 1-site invariant c4v iPEPS it's enough to construct a single reduced
-        density matrix of a 2x2 plaquette. Afterwards, the energy per site `e` is 
+        density matrix of a 2x2 plaquette. Afterwards, the energy per site `e` is
         computed by evaluating individual terms in the Hamiltonian through
         :math:`\langle \mathcal{O} \rangle = Tr(\rho_{2x2} \mathcal{O})`
-        
-        .. math:: 
+
+        .. math::
 
             e = -(\langle h2_{<\bf{0},\bf{x}>} \rangle + \langle h2_{<\bf{0},\bf{y}>} \rangle)
             + q\langle h4_{\bf{0}} \rangle - h_x \langle h4_{\bf{0}} \rangle
@@ -274,7 +367,7 @@ class ISING_C4V():
         """
         rdm2x2= rdm_c4v.rdm2x2(state,env_c4v)
         energy_per_site= torch.einsum('ijklabcd,ijklabcd',rdm2x2,self.hp)
-        
+
         # From individual contributions
         # eSx= torch.einsum('ijklajkl,ia',rdm2x2,self.sx)
         # eSzSz= torch.einsum('ijklabkl,ijab',rdm2x1,self.szsz)
@@ -303,7 +396,7 @@ class ISING_C4V():
             for label,op in self.obs_ops.items():
                 obs[f"{label}"]= torch.trace(rdm1x1@op)
             obs["sx"]= 0.5*(obs["sp"] + obs["sm"])
-            
+
             rdm2x2= rdm_c4v.rdm2x2(state,env_c4v)
             obs["SzSzSzSz"]= torch.einsum('ijklabcd,ijklabcd',rdm2x2,self.szszszsz)
 
@@ -326,6 +419,6 @@ class ISING_C4V():
 
         Sz0szR= corrf_c4v.corrf_1sO1sO(state, env_c4v, Sop_zxy[0,:,:], get_op(Sop_zxy[0,:,:]), dist)
         Sx0sxR= corrf_c4v.corrf_1sO1sO(state, env_c4v, Sop_zxy[1,:,:], get_op(Sop_zxy[1,:,:]), dist)
- 
+
         res= dict({"ss": Sz0szR+Sx0sxR, "szsz": Sz0szR, "sxsx": Sx0sxR})
         return res

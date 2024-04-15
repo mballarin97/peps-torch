@@ -27,12 +27,12 @@ def main():
     cfg.print_config()
     torch.set_num_threads(args.omp_cores)
     torch.manual_seed(args.seed)
-    
+
     model = j1j2.J1J2(j1=args.j1, j2=args.j2)
 
     # initialize an ipeps
     # 1) define lattice-tiling function, that maps arbitrary vertex of square lattice
-    # coord into one of coordinates within unit-cell of iPEPS ansatz    
+    # coord into one of coordinates within unit-cell of iPEPS ansatz
     if args.tiling == "BIPARTITE":
         def lattice_to_site(coord):
             vx = (coord[0] + abs(coord[0]) * 2) % 2
@@ -114,7 +114,8 @@ def main():
 
     print(state)
 
-    # 2) select the "energy" function 
+    # 2) select the "energy" function +
+
     if args.tiling == "BIPARTITE" or args.tiling == "2SITE":
         energy_f= model.energy_2x2_2site
         eval_obs_f= model.eval_obs
@@ -179,7 +180,7 @@ def main():
 
     # environment diagnostics
     print("\n")
-    for c_loc,c_ten in ctm_env_init.C.items(): 
+    for c_loc,c_ten in ctm_env_init.C.items():
         u,s,v= torch.svd(c_ten, compute_uv=False)
         print(f"spectrum C[{c_loc}]")
         for i in range(args.chi):
